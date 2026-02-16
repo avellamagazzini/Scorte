@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Avella Scanner 2.0</title>
+    <link rel="manifest" href="manifest.json">
+    <meta name="theme-color" content="#38bdf8">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.3.2/papaparse.min.js"></script>
+    <script src="https://unpkg.com/html5-qrcode"></script>
+    <style>
+        body { font-family: 'Segoe UI', sans-serif; background: #0f172a; color: white; margin: 0; padding: 10px; }
+        .container { max-width: 600px; margin: auto; }
+        h2 { color: #38bdf8; text-align: center; font-size: 1.5rem; margin: 10px 0; }
+        #reader { width: 100%; border-radius: 12px; overflow: hidden; border: 2px solid #38bdf8; background: black; margin-bottom: 10px; }
+        .setup-box { background: #1e293b; padding: 15px; border-radius: 8px; margin-bottom: 15px; border: 1px dashed #38bdf8; }
+        table { width: 100%; border-collapse: collapse; background: #1e293b; border-radius: 8px; margin-top: 10px; }
+        th, td { padding: 12px 8px; border-bottom: 1px solid #334155; text-align: left; }
+        th { background: #334155; color: #38bdf8; font-size: 0.8rem; text-transform: uppercase; }
+        .qty-controls { display: flex; align-items: center; gap: 15px; }
+        .qty-btn { background: #38bdf8; border: none; color: white; width: 35px; height: 35px; border-radius: 5px; font-size: 20px; font-weight: bold; }
+        .btn { padding: 12px; border-radius: 8px; border: none; font-weight: bold; color: white; cursor: pointer; width: 100%; margin-top: 5px; font-size: 0.9rem; }
+        .status-msg { color: #10b981; font-weight: bold; font-size: 0.9rem; margin-top: 5px; }
+        @media print { .no-print { display: none !important; } body { background: white; color: black; } table { border: 1px solid black; width: 100%; } th, td { border: 1px solid black; color: black; } }
+    </style>
+</head>
+<body onclick="if(document.getElementById('manualInput')) document.getElementById('manualInput').focus()">
+<div class="container">
+    <h2 class="no-print">🛒 Avella Scan 2.0</h2>
+    
+    <div class="setup-box no-print">
+        <label><strong>1. AGGIORNA DATABASE (CSV):</strong></label>
+        <input type="file" id="files" accept=".csv" multiple style="width:100%; margin:10px 0;">
+        <div id="status" class="status-msg">Verifica archivio locale...</div>
+    </div>
+
+    <div id="reader" class="no-print"></div>
+
+    <table id="mainTable">
+        <thead><tr><th>PRODOTTO</th><th style="width:110px">QTÀ</th><th class="no-print" style="width:40px"></th></tr></thead>
+        <tbody></tbody>
+    </table>
+
+    <div class="no-print" style="margin-top:20px; display:grid; grid-template-columns: 1fr 1fr; gap:10px; padding-bottom: 40px;">
+        <button class="btn" style="background:#22c55e" onclick="window.print()">🖨️ STAMPA / PDF</button>
+        <button class="btn" style="background:#8b5cf6" onclick="saveSession()">💾 SALVA ORDINE</button>
+        <button class="btn" style="background:#f59e0b" onclick="document.getElementById('loadS').click()">📂 CARICA ORDINE</button>
+        <button class="btn" style="background:#ef4444" onclick="clearAll()">🔄 RESET TOTALE</button>
+        <input type="file" id="loadS" accept=".json" style="display:none">
+    </div>
+</div>
+
+<script>
+    let db = new Map();
+    let cart = {};
+
+    window.onload = () => {
+        const savedDB = localStorage.getItem('avella_db');
+        if (savedDB) {
+            db = new Map(JSON.parse(savedDB));
+            document.getElementById('status').innerText = "✅ Database pronto: " + db.size + " codici in memoria.";
+        }
+        initScanner();
+        if ('serviceWorker' in navigator) { navigator.serviceWorker.register('sw.js'); }
+    };
+
+    function initScanner() {
+        const html5QrCode = new Html5Qrcode("reader");
+        const config = { fps: 15, qrbox: { width: 250, height: 150 } };
+        html5QrCode.start({ facingMode: "environment" }, config, (code) => {
+            processScan(code);
+        }).catch(err => console.log("Errore camera: ", err));
+    }
+
+    function processScan(code) {
+        const product = db.get(code.trim());
+        if (product) {
+            if (cart[code]) cart[code].q++;
+            else cart[code] = { name: product, q: 1 };
+            render();
+            if (navigator.vibrate) navigator.vibrate(100);
+        }
+    }
+
+    document.getElementById('files').addEventListener('change', function(e) {
+        const files = Array.from(e.target.files);
+        let processed = 0;
+        files.forEach(file => {
+            Papa.parse(file, {
+                header: true,
+                skipEmptyLines: true,
+                complete: function(results) {
+                    let lastT = "";
+                    results.data.forEach(row => {
+                        if (row["Title"]) lastT = row["Title"];
+                        let s = row["Variant SKU"] ? row["Variant SKU"].trim() : "";
+                        let b = row["Variant Barcode"] ? row["Variant Barcode"].trim() : "";
+                        if (s) db.set(s, lastT);
+                        if (b) db.set(b, lastT);
+                    });
+                    processed++;
+                    if (processed === files.length) {
+                        localStorage.setItem('avella_db', JSON.stringify([...db]));
+                        document.getElementById('status').innerText = "✅ Archivio aggiornato: " + db.size + " prodotti.";
+                    }
+                }
+            });
+        });
+    });
+
+    function render() {
+        const tbody = document.querySelector('#mainTable tbody');
+        tbody.innerHTML = '';
+        for (const code in cart) {
+            tbody.innerHTML += `<tr>
+                <td><strong>${cart[code].name}</strong><br><small style="color:#94a3b8">${code}</small></td>
+                <td>
+                    <div class="qty-controls">
+                        <button class="qty-btn no-print" onclick="updateQty('${code}', -1)">-</button>
+                        <span style="font-weight:bold; font-size:1.1rem">${cart[code].q}</span>
+                        <button class="qty-btn no-print" onclick="updateQty('${code}', 1)">+</button>
+                    </div>
+                </td>
+                <td class="no-print"><button onclick="delete cart['${code}']; render()" style="color:#ef4444; background:none; border:none; font-size:24px;">&times;</button></td>
+            </tr>`;
+        }
+    }
+
+    function updateQty(code, d) {
+        cart[code].q += d;
+        if (cart[code].q <= 0) delete cart[code];
+        render();
+    }
+
+    function saveSession() {
+        const data = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(cart));
+        const a = document.createElement('a');
+        a.href = data; a.download = "ordine_avella_" + new Date().toISOString().slice(0,10) + ".json";
+        a.click();
+    }
+
+    document.getElementById('loadS').addEventListener('change', function(e) {
+        const reader = new FileReader();
+        reader.onload = (ev) => { cart = JSON.parse(ev.target.result); render(); };
+        reader.readAsText(e.target.files[0]);
+    });
+
+    function clearAll() { if(confirm('Attenzione: questo svuoterà anche il database caricato. Continuare?')) { localStorage.removeItem('avella_db'); location.reload(); } }
+</script>
+</body>
+</html>
